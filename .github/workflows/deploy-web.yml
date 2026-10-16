@@ -3,7 +3,7 @@ name: Build and Deploy Web UI to GitHub Pages
 on:
   push:
     branches: [ master, main ]
-  workflow_dispatch: # 支持在 Actions 页面手动点击触发
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,18 +14,19 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 拉取 Fork 仓库源码
+      - name: 1. 拉取仓库源码
         uses: actions/checkout@v4
 
-      - name: 2. 配置 Node.js 20 环境
+      - name: 2. 配置 Node.js 环境并开启 Yarn 缓存
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'yarn'
 
-      - name: 3. 云端安装依赖并编译 TypeScript 源码
+      - name: 3. 使用 Yarn 严格按锁文件安装依赖并打包
         run: |
-          npm install --legacy-peer-deps
-          npm run build
+          yarn install --frozen-lockfile || yarn install
+          yarn run webpack:prod
 
       - name: 4. 组装在线混淆网页与浏览器端核心包
         run: |
@@ -36,10 +37,11 @@ jobs:
           <html lang="zh-CN">
           <head>
             <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>JS 在线混淆工具 (私有定制版)</title>
             <style>
               body { font-family: system-ui, -apple-system, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f8fafc; color: #1e293b; }
-              .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; background: #fff; padding: 12px 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+              .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; background: #fff; padding: 12px 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
               select, button { padding: 8px 16px; font-size: 14px; border-radius: 6px; border: 1px solid #cbd5e1; }
               button { background: #2563eb; color: #fff; border: none; cursor: pointer; font-weight: 600; }
               button:hover { background: #1d4ed8; }
@@ -106,9 +108,9 @@ jobs:
                   const res = JavaScriptObfuscator.obfuscate(code, presets[mode]);
                   document.getElementById('output').value = res.getObfuscatedCode();
                   const t1 = performance.now();
-                  document.getElementById('status').innerText = `混淆成功！耗时: ${(t1 - t0).toFixed(0)} ms`;
+                  document.getElementById('status').innerText = `✅ 混淆成功！耗时: ${(t1 - t0).toFixed(0)} ms`;
                 } catch (e) {
-                  document.getElementById('output').value = '错误: ' + e.message;
+                  document.getElementById('output').value = '❌ 混淆错误: ' + e.message;
                 }
               };
             </script>
@@ -116,11 +118,11 @@ jobs:
           </html>
           EOF
 
-      - name: 5. 上传构建产物并发布到 GitHub Pages
+      - name: 5. 上传构建产物
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./public
 
-      - name: 6. 部署上线
+      - name: 6. 部署到 GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
