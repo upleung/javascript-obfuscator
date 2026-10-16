@@ -1,40 +1,24 @@
-name: JavaScript Obfuscator CI
+name: JavaScript Obfuscator CI & Release
 
 on:
   push:
-    branches: [master, release-**]
+    branches: [ master, main, release-** ]
+    tags:
+      - 'v*' # 当推送 v1.0.0 这样的标签时自动触发 Release 发布
   pull_request:
-    branches: [master, release-**]
-  #schedule:
-    #- cron: '0 1 * * *'
-  workflow_dispatch: # 允许在 GitHub 网页端手动触发工作流
+    branches: [ master, main ]
+  workflow_dispatch: # 支持在 GitHub 网页端手动点击触发
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
-
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest,
-            node-version: 20.x
-          - os: ubuntu-latest,
-            node-version: 22.x
-          - os: ubuntu-latest,
-            node-version: 24.x
-          - os: windows-latest,
-            node-version: 20.x
-          - os: windows-latest,
-            node-version: 22.x
-          - os: windows-latest,
-            node-version: 24.x
+        node-version: [20.x, 22.x]
 
     steps:
       - uses: actions/checkout@v4
-      - uses: styfle/cancel-workflow-action@0.12.1
-        with:
-          access_token: ${{ github.token }}
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
@@ -43,25 +27,42 @@ jobs:
         with:
           path: '**/node_modules'
           key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
-      - run: yarn install
+      - run: yarn install --frozen-lockfile || yarn install
       - run: yarn run build
       - run: yarn run test:mocha-coverage
-      - run: yarn run test:mocha-coverage:report
-      - name: Coveralls
-        uses: coverallsapp/github-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: './coverage/lcov.info'
-          parallel: true
-          flag-name: node-${{ matrix.node-version }}-${{ matrix.os }}
 
-  coveralls-finish:
-    needs: build
-    if: always()
+  release-build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 赋予创建 Release 和上传资产的权限
+
     steps:
-      - name: Coveralls Finished
-        uses: coverallsapp/github-action@v2
+      - uses: actions/checkout@v4
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          parallel-finished: true
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install dependencies & Build
+        run: |
+          yarn install --frozen-lockfile || yarn install
+          yarn run webpack:prod
+
+      - name: Package Build Artifacts
+        run: |
+          mkdir -p release_package
+          # 将编译好的 dist 目录及核心入口打包
+          zip -r release_package/javascript-obfuscator-dist.zip dist/ package.json README.md
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_package/javascript-obfuscator-dist.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
