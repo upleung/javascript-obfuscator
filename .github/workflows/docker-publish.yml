@@ -1,0 +1,122 @@
+name: Build and Push Docker Image to GHCR
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-docker-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 拉取源码
+        uses: actions/checkout@v4
+
+      - name: 2. 配置 Node.js 20 并编译源码
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: |
+          npm install --legacy-peer-deps
+          npm run build
+
+      - name: 3. 自动生成轻量级 HTTP API 服务与 Dockerfile
+        run: |
+          cat << 'EOF' > api-server.js
+          const http = require('http');
+          const JavaScriptObfuscator = require('./dist/index.js');
+
+          // 内置推荐的黄金配置与预设映射
+          const PRESET_MAP = {
+            golden: {
+              compact: true,
+              controlFlowFlattening: true,
+              controlFlowFlatteningThreshold: 0.5,
+              deadCodeInjection: true,
+              deadCodeInjectionThreshold: 0.25,
+              splitStrings: true,
+              splitStringsChunkLength: 10,
+              stringArray: true,
+              stringArrayCallsTransform: true,
+              stringArrayCallsTransformThreshold: 0.6,
+              stringArrayEncoding: ['base64'],
+              stringArrayThreshold: 0.75
+            },
+            medium: { optionsPreset: 'medium-obfuscation' },
+            low: { optionsPreset: 'low-obfuscation' },
+            high: { optionsPreset: 'high-obfuscation' }
+          };
+
+          const server = http.createServer((req, res) => {
+            if (req.method === 'POST' && req.url === '/obfuscate') {
+              let body = '';
+              // 限制单次请求体最大 2MB，防止超大源码直接打爆容器内存
+              req.on('data', chunk => {
+                body += chunk;
+                if (body.length > 2 * 1024 * 1024) {
+                  res.writeHead(413, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'Payload too large (Max 2MB)' }));
+                  req.destroy();
+                }
+              });
+              req.on('end', () => {
+                try {
+                  const { code, level = 'golden', options = {} } = JSON.parse(body);
+                  if (!code) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    return res.end(JSON.stringify({ error: 'Missing code field' }));
+                  }
+                  const finalOptions = { ...(PRESET_MAP[level] || PRESET_MAP.golden), ...options };
+                  const result = JavaScriptObfuscator.obfuscate(code, finalOptions);
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ obfuscatedCode: result.getObfuscatedCode() }));
+                } catch (err) {
+                  res.writeHead(500, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: err.message }));
+                }
+              });
+            } else {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ status: 'ok', usage: 'POST /obfuscate with { code, level: "golden"|"medium"|"low"|"high", options: {} }' }));
+            }
+          });
+
+          const PORT = process.env.PORT || 3000;
+          server.listen(PORT, () => console.log(`Obfuscator container listening on port ${PORT}`));
+          EOF
+
+          cat << 'EOF' > Dockerfile.action
+          FROM node:20-alpine
+          WORKDIR /app
+          COPY package*.json ./
+          COPY node_modules ./node_modules
+          COPY dist ./dist
+          COPY api-server.js ./
+          # 限制 Node V8 堆内存上限，防止触发宿主机无响应
+          ENV NODE_OPTIONS="--max-old-space-size=1024"
+          EXPOSE 3000
+          CMD ["node", "api-server.js"]
+          EOF
+
+      - name: 4. 登录 GitHub 官方容器镜像仓库 (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 5. 转换仓库名为小写（符合 Docker 镜像命名规范）
+        id: repo_lower
+        run: echo "name=$(echo '${{ github.repository }}' \vert{} tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: 6. 构建并推送 Docker 镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.action
+          push: true
+          tags: ghcr.io/${{ steps.repo_lower.outputs.name }}:latest
