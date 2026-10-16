@@ -5,8 +5,9 @@ on:
     branches: [master, release-**]
   pull_request:
     branches: [master, release-**]
-  schedule:
-    - cron: '0 1 * * *'
+  #schedule:
+    #- cron: '0 1 * * *'
+  workflow_dispatch: # 允许在 GitHub 网页端手动触发工作流
 
 jobs:
   build:
