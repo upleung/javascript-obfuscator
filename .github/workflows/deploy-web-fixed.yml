@@ -1,0 +1,256 @@
+name: Build and Deploy Web UI to GitHub Pages
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Web UI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+
+      - name: Enable Corepack and prepare Yarn
+        run: |
+          corepack enable
+          yarn --version
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build JavaScript Obfuscator
+        run: yarn run webpack:prod
+
+      - name: Verify browser bundle
+        run: |
+          test -s dist/index.browser.js
+          echo "Browser bundle found:"
+          ls -lh dist/index.browser.js
+
+      - name: Assemble website
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public
+          cp dist/index.browser.js public/index.browser.js
+          touch public/.nojekyll
+
+          cat > public/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="zh-CN">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta name="description" content="浏览器端 JavaScript 在线混淆工具">
+            <title>JavaScript 在线混淆工具</title>
+            <style>
+              * { box-sizing: border-box; }
+              body {
+                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 24px;
+                background: #f8fafc;
+                color: #1e293b;
+              }
+              h2 { margin-top: 0; }
+              .bar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+                margin-bottom: 16px;
+                background: #fff;
+                padding: 14px 16px;
+                border-radius: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,.1);
+              }
+              select, button {
+                padding: 9px 12px;
+                font-size: 14px;
+                border-radius: 6px;
+                border: 1px solid #cbd5e1;
+              }
+              select { max-width: 100%; }
+              button {
+                background: #2563eb;
+                color: #fff;
+                border: none;
+                cursor: pointer;
+                font-weight: 600;
+              }
+              button:hover { background: #1d4ed8; }
+              button:disabled { opacity: .6; cursor: wait; }
+              .grid {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+                gap: 16px;
+              }
+              .panel { min-width: 0; }
+              textarea {
+                display: block;
+                width: 100%;
+                min-height: 420px;
+                resize: vertical;
+                font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                font-size: 13px;
+                line-height: 1.5;
+                padding: 12px;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                background: #fff;
+                color: #0f172a;
+              }
+              #status { color: #64748b; font-size: 13px; }
+              .hint { color: #64748b; font-size: 13px; }
+              @media (max-width: 760px) {
+                body { padding: 14px; }
+                .grid { grid-template-columns: 1fr; }
+                textarea { min-height: 280px; }
+              }
+            </style>
+            <script src="./index.browser.js"></script>
+          </head>
+          <body>
+            <h2>JavaScript 在线混淆工具</h2>
+            <p class="hint">代码在当前浏览器中处理；请勿将真实密钥或敏感凭据放入示例代码。</p>
+
+            <div class="bar">
+              <label for="preset"><strong>混淆强度：</strong></label>
+              <select id="preset">
+                <option value="golden" selected>黄金实战配置</option>
+                <option value="medium-obfuscation">官方中等混淆</option>
+                <option value="low-obfuscation">官方低度混淆</option>
+                <option value="high-obfuscation">官方高度混淆</option>
+              </select>
+              <button id="runBtn" type="button">立即执行混淆</button>
+              <span id="status" role="status" aria-live="polite"></span>
+            </div>
+
+            <div class="grid">
+              <section class="panel">
+                <h4>原始 JavaScript 代码</h4>
+                <textarea id="input" spellcheck="false">function calculateSignature(token, timestamp) {
+            const salt = "example_salt";
+            return btoa(token + "_" + timestamp + "_" + salt);
+          }
+
+          console.log(calculateSignature("user_01", Date.now()));</textarea>
+              </section>
+              <section class="panel">
+                <h4>混淆后代码</h4>
+                <textarea id="output" readonly spellcheck="false" placeholder="点击“立即执行混淆”生成结果"></textarea>
+              </section>
+            </div>
+
+            <script>
+              (() => {
+                const presets = {
+                  golden: {
+                    compact: true,
+                    controlFlowFlattening: true,
+                    controlFlowFlatteningThreshold: 0.5,
+                    deadCodeInjection: true,
+                    deadCodeInjectionThreshold: 0.25,
+                    identifierNamesGenerator: "hexadecimal",
+                    renameGlobals: false,
+                    splitStrings: true,
+                    splitStringsChunkLength: 10,
+                    stringArray: true,
+                    stringArrayCallsTransform: true,
+                    stringArrayCallsTransformThreshold: 0.6,
+                    stringArrayEncoding: ["base64"],
+                    stringArrayThreshold: 0.75,
+                    unicodeEscapeSequence: false
+                  },
+                  "medium-obfuscation": { optionsPreset: "medium-obfuscation" },
+                  "low-obfuscation": { optionsPreset: "low-obfuscation" },
+                  "high-obfuscation": { optionsPreset: "high-obfuscation" }
+                };
+
+                const runBtn = document.getElementById("runBtn");
+                const input = document.getElementById("input");
+                const output = document.getElementById("output");
+                const preset = document.getElementById("preset");
+                const status = document.getElementById("status");
+
+                runBtn.addEventListener("click", () => {
+                  const api = window.JavaScriptObfuscator;
+                  if (!api || typeof api.obfuscate !== "function") {
+                    status.textContent = "加载失败：浏览器端混淆器未正确加载。";
+                    return;
+                  }
+
+                  const started = performance.now();
+                  runBtn.disabled = true;
+                  status.textContent = "正在混淆…";
+
+                  try {
+                    const result = api.obfuscate(input.value, presets[preset.value]);
+                    output.value = result.getObfuscatedCode();
+                    status.textContent =
+                      "混淆成功，耗时 " + Math.round(performance.now() - started) + " ms";
+                  } catch (error) {
+                    output.value = "";
+                    status.textContent = "混淆失败：" + (error && error.message ? error.message : String(error));
+                  } finally {
+                    runBtn.disabled = false;
+                  }
+                });
+              })();
+            </script>
+          </body>
+          </html>
+          HTML
+
+          test -s public/index.html
+          test -s public/index.browser.js
+          echo "Website files:"
+          find public -maxdepth 1 -type f -printf '%f (%s bytes)\n' | sort
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./public
+
+  deploy:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4
