@@ -13,24 +13,29 @@ jobs:
   build-docker-api:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 拉取源码
+      - name: 1. 拉取仓库源码
         uses: actions/checkout@v4
 
-      - name: 2. 配置 Node.js 20 并编译源码
+      - name: 2. 配置 Node.js 环境并开启 Yarn 缓存
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: |
-          npm install --legacy-peer-deps
-          npm run build
+          cache: 'yarn'
 
-      - name: 3. 自动生成轻量级 HTTP API 服务与 Dockerfile
+      - name: 3. 编译源码并精简生产环境 node_modules
+        run: |
+          # 第一步：安装全量依赖完成 Webpack 编译
+          yarn install --frozen-lockfile || yarn install
+          yarn run webpack:prod
+          # 第二步：剔除 devDependencies 开发依赖，为 Docker 镜像极速瘦身
+          yarn install --production --ignore-scripts
+
+      - name: 4. 生成轻量级 HTTP API 服务与 Dockerfile
         run: |
           cat << 'EOF' > api-server.js
           const http = require('http');
           const JavaScriptObfuscator = require('./dist/index.js');
 
-          // 内置推荐的黄金配置与预设映射
           const PRESET_MAP = {
             golden: {
               compact: true,
@@ -54,7 +59,6 @@ jobs:
           const server = http.createServer((req, res) => {
             if (req.method === 'POST' && req.url === '/obfuscate') {
               let body = '';
-              // 限制单次请求体最大 2MB，防止超大源码直接打爆容器内存
               req.on('data', chunk => {
                 body += chunk;
                 if (body.length > 2 * 1024 * 1024) {
@@ -81,7 +85,10 @@ jobs:
               });
             } else {
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ status: 'ok', usage: 'POST /obfuscate with { code, level: "golden"|"medium"|"low"|"high", options: {} }' }));
+              res.end(JSON.stringify({
+                status: 'ok',
+                usage: 'POST /obfuscate with { code, level: "golden"|"medium"|"low"|"high", options: {} }'
+              }));
             }
           });
 
@@ -92,28 +99,28 @@ jobs:
           cat << 'EOF' > Dockerfile.action
           FROM node:20-alpine
           WORKDIR /app
-          COPY package*.json ./
+          COPY package.json ./
           COPY node_modules ./node_modules
           COPY dist ./dist
           COPY api-server.js ./
-          # 限制 Node V8 堆内存上限，防止触发宿主机无响应
+          ENV NODE_ENV=production
           ENV NODE_OPTIONS="--max-old-space-size=1024"
           EXPOSE 3000
           CMD ["node", "api-server.js"]
           EOF
 
-      - name: 4. 登录 GitHub 官方容器镜像仓库 (GHCR)
+      - name: 5. 登录 GitHub 官方容器镜像仓库 (GHCR)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 5. 转换仓库名为小写（符合 Docker 镜像命名规范）
+      - name: 6. 转换仓库名为小写
         id: repo_lower
         run: echo "name=$(echo '${{ github.repository }}' \vert{} tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: 6. 构建并推送 Docker 镜像
+      - name: 7. 构建并推送精简版 Docker 镜像
         uses: docker/build-push-action@v5
         with:
           context: .
